@@ -106,48 +106,208 @@ class TableroFlota extends StatefulWidget {
 
 class _TableroFlotaState extends State<TableroFlota> {
   late final Future<Map<String, String>> _configuracionFuture;
+  late final StreamController<List<TelemetriaCamion>> _telemetriaController;
+  late final Stream<List<TelemetriaCamion>> _telemetriaStream;
   late final StreamSubscription<List<TelemetriaCamion>> _telemetriaSubscription;
-
-  List<TelemetriaCamion> _telemetriaActual = const [];
 
   @override
   void initState() {
     super.initState();
     _configuracionFuture = recuperarConfiguracionCentral();
+    _telemetriaController =
+        StreamController<List<TelemetriaCamion>>.broadcast();
+    _telemetriaStream = _telemetriaController.stream;
     _telemetriaSubscription = simularFlujoTelemetria().listen((telemetria) {
-      if (!mounted) {
-        return;
+      if (!_telemetriaController.isClosed) {
+        _telemetriaController.add(telemetria);
       }
-
-      setState(() {
-        _telemetriaActual = telemetria;
-      });
     });
   }
 
   @override
   void dispose() {
     unawaited(_telemetriaSubscription.cancel());
+    unawaited(_telemetriaController.close());
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Center(
-        child: FutureBuilder<Map<String, String>>(
-          future: _configuracionFuture,
-          builder: (context, snapshot) {
-            final camionesConectados = _telemetriaActual.length;
-            final estado = snapshot.hasData
-                ? 'Configuración recibida'
-                : 'Conectando...';
-            return Text(
-              'Tablero de control de flota\n$estado\n'
-              'Camiones conectados: $camionesConectados',
-              textAlign: TextAlign.center,
-            );
-          },
+      appBar: AppBar(
+        title: const Text('Control de flota'),
+        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+      ),
+      body: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _buildEstadoServidor(),
+          Expanded(child: _buildTelemetria()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEstadoServidor() {
+    return FutureBuilder<Map<String, String>>(
+      future: _configuracionFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return _buildPanel(
+            const CircularProgressIndicator(),
+            'Conectando con el servidor central...',
+          );
+        }
+
+        if (snapshot.hasError) {
+          return _buildPanel(
+            const Icon(Icons.cloud_off, color: Colors.red, size: 32),
+            'Error de red al recuperar la configuración central',
+          );
+        }
+
+        if (snapshot.hasData) {
+          final configuracion = snapshot.data!;
+          return Card(
+            margin: const EdgeInsets.all(12),
+            child: Padding(
+              padding: const EdgeInsets.all(16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    configuracion['nombreCentroCarga'] ?? 'Centro sin nombre',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  _buildDatoServidor(
+                    Icons.link,
+                    'Enlace',
+                    configuracion['enlace'],
+                  ),
+                  _buildDatoServidor(
+                    Icons.public,
+                    'Región',
+                    configuracion['region'],
+                  ),
+                  _buildDatoServidor(
+                    Icons.check_circle,
+                    'Estado',
+                    configuracion['estado'],
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
+
+        return _buildPanel(
+          const Icon(Icons.info_outline),
+          'No hay datos del servidor central',
+        );
+      },
+    );
+  }
+
+  Widget _buildTelemetria() {
+    return StreamBuilder<List<TelemetriaCamion>>(
+      stream: _telemetriaStream,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+
+        if (snapshot.hasError) {
+          return Center(child: Text('Error de telemetría: ${snapshot.error}'));
+        }
+
+        if (snapshot.hasData) {
+          final camiones = snapshot.data!;
+          return ListView.builder(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+            itemCount: camiones.length,
+            itemBuilder: (context, index) {
+              return _buildCamionCard(camiones[index]);
+            },
+          );
+        }
+
+        return const Center(child: Text('Esperando datos de telemetría...'));
+      },
+    );
+  }
+
+  Widget _buildPanel(Widget indicador, String mensaje) {
+    return Card(
+      margin: const EdgeInsets.all(12),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Row(
+          children: [
+            indicador,
+            const SizedBox(width: 16),
+            Expanded(child: Text(mensaje)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDatoServidor(IconData icono, String etiqueta, String? valor) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Row(
+        children: [
+          Icon(icono, size: 18),
+          const SizedBox(width: 8),
+          Text('$etiqueta: ${valor ?? 'No disponible'}'),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCamionCard(TelemetriaCamion camion) {
+    final porcentaje = camion.nivelCombustible * 100;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Text(
+                  'Camión ${camion.economico}',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                Text('${camion.kilometraje} km'),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Row(
+              children: [
+                Expanded(
+                  child: LinearProgressIndicator(
+                    value: camion.nivelCombustible,
+                    minHeight: 8,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Text('${porcentaje.toStringAsFixed(0)}%'),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              camion.ultimaAlerta,
+              style: TextStyle(
+                color: camion.ultimaAlerta == 'Sin alertas'
+                    ? Colors.green
+                    : Colors.orange.shade800,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
         ),
       ),
     );
